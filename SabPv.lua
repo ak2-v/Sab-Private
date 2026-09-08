@@ -1,65 +1,27 @@
 --[[
     language: Lua
-    file: AK2_Brainrot.lua
-    target: Roblox (Steal a Brainrot)
-    features: Net bypass, auto-steal, grapple TP, anti-ban, FPS unlock, one-way platforms, GUI
+    file: AK2_Brainrot_Xeno.lua
+    target: Steal a Brainrot (Xeno executor)
+    features: Auto‑steal, Grapple TP, One‑Way platforms, ESP, FPS unlock
     tiktok: @ak2.v
 ]]
 
--- // ENVIRONMENT LOCK
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
-local HttpService = game:GetService("HttpService")
-
--- // ANTI-PATCH LAYER — destroys Sammy's AC hooks before they start
-local function nukeAntiCheat()
-    for _, v in pairs(getgc(true)) do
-        if type(v) == "function" then
-            local info = debug.getinfo(v)
-            if info and info.source and (info.source:find("anticheat") or info.source:find("sammy") or info.source:find("detect")) then
-                local ups = {}
-                local i = 1
-                while true do
-                    local name, val = debug.getupvalue(v, i)
-                    if not name then break end
-                    ups[name] = val
-                    i = i + 1
-                end
-                if ups["Check"] or ups["Validate"] or ups["Report"] then
-                    debug.setupvalue(v, 1, function() end)
-                end
-            end
-        end
-    end
-    -- kill remotes
-    for _, r in pairs(ReplicatedStorage:GetDescendants()) do
-        if r:IsA("RemoteEvent") and (r.Name:lower():find("ban") or r.Name:lower():find("detect") or r.Name:lower():find("report")) then
-            local old = r.OnServerEvent
-            r.OnServerEvent = function(...)
-                if select(2, ...) == LocalPlayer then return end
-                return old and old(...)
-            end
-        end
-    end
-end
-nukeAntiCheat()
 
 -- // STATE
 local state = {
     autoSteal = false,
     grappleTP = false,
     oneWay = false,
-    fpsUncap = false,
     esp = false,
     targetMode = "richest", -- richest | closest
-    stealth = false,
     espBoxes = {},
     espNames = {},
-    espHealth = {},
     conns = {},
     flying = false,
     flySpeed = 50,
@@ -67,11 +29,11 @@ local state = {
     bg = nil
 }
 
--- // CACHE SCANNER (lightning fast)
+-- // CACHE SCANNER (simple)
 local function getAnimalCache()
     local cache = SharedState and SharedState.AllAnimalsCache
     if type(cache) == "table" then return cache end
-    -- fallback: scrape workspace
+    -- fallback: scrape workspace plots
     local plots = Workspace:FindFirstChild("Plots")
     if plots then
         local list = {}
@@ -88,14 +50,15 @@ local function getAnimalCache()
     return {}
 end
 
--- // FAST REMOTE RESOLVER (no fancy GUID scanning, direct hash brute)
+-- // REMOTE RESOLVER (no debug, just folder scanning)
 local function resolveUseItem()
-    local netFolder = ReplicatedStorage:FindFirstChild("Packages") and ReplicatedStorage.Packages:FindFirstChild("Net")
+    local netFolder = ReplicatedStorage:FindFirstChild("Packages")
+    if netFolder then netFolder = netFolder:FindFirstChild("Net") end
     if not netFolder then return nil end
-    -- direct alias first
+    -- try direct alias
     local direct = netFolder:FindFirstChild("RE/UseItem")
     if direct then return direct end
-    -- hash pair detection
+    -- try hash pair detection
     local reH, rfH = {}, {}
     for _, ch in pairs(netFolder:GetChildren()) do
         local nm = ch.Name
@@ -112,7 +75,7 @@ local function resolveUseItem()
     return nil
 end
 
--- // GRAPPLE TELEPORT (instant, no camera lag)
+-- // GRAPPLE TELEPORT
 local function fireGrappleTP(targetPos)
     local remote = resolveUseItem()
     if not remote then return false end
@@ -120,36 +83,39 @@ local function fireGrappleTP(targetPos)
     if not char then return false end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
-    -- force equip grapple
+    -- equip grapple if needed
     local tool = char:FindFirstChild("Grapple Hook")
     if not tool then
         local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
         if bp then tool = bp:FindFirstChild("Grapple Hook") end
         if tool and char:FindFirstChildOfClass("Humanoid") then
             pcall(function() char.Humanoid:EquipTool(tool) end)
+            task.wait(0.05)
+            char = LocalPlayer.Character
+            if char then tool = char:FindFirstChild("Grapple Hook") end
         end
     end
     if not tool then return false end
-    -- fake aim
-    local oldCF = workspace.CurrentCamera.CFrame
-    workspace.CurrentCamera.CFrame = CFrame.new(hrp.Position, targetPos)
-    -- fire
+    -- fake aim (no debug, just set camera)
+    local oldCF = Workspace.CurrentCamera.CFrame
+    Workspace.CurrentCamera.CFrame = CFrame.new(hrp.Position, targetPos)
     local ok = pcall(function()
-        remote:FireServer(targetPos, Vector3.new(0, 0, 0), 1) -- typical grapple args
+        remote:FireServer(targetPos, Vector3.new(0, 0, 0), 1)
     end)
-    if not ok then ok = pcall(function() tool:Activate() end) end
-    workspace.CurrentCamera.CFrame = oldCF
+    if not ok then
+        ok = pcall(function() tool:Activate() end)
+    end
+    Workspace.CurrentCamera.CFrame = oldCF
     return ok
 end
 
--- // AUTO-STEAL LOOP (speed optimized)
+-- // AUTO-STEAL LOOP
 RunService.Heartbeat:Connect(function()
     if not state.autoSteal then return end
     local cache = getAnimalCache()
     if #cache == 0 then return end
     local target = nil
     if state.targetMode == "richest" then
-        -- we need actual money values, but for now pick random rich-looking
         for _, a in ipairs(cache) do
             if a.owner and a.owner ~= LocalPlayer.Name and a.owner ~= LocalPlayer.DisplayName then
                 target = a
@@ -157,7 +123,6 @@ RunService.Heartbeat:Connect(function()
             end
         end
     else
-        -- closest: find nearest plot
         local char = LocalPlayer.Character
         if not char then return end
         local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -181,7 +146,6 @@ RunService.Heartbeat:Connect(function()
             pcall(function()
                 fireGrappleTP(pos)
                 task.wait(0.1)
-                -- secondary teleport inside
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if hrp then hrp.CFrame = CFrame.new(pos) end
             end)
@@ -189,12 +153,12 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- // FPS UNCAP
+-- // FPS UNCAP (if available)
 if setfpscap then
     pcall(setfpscap, 999)
 end
 
--- // ONE-WAY PLATFORMS (toggleable)
+-- // ONE-WAY PLATFORMS
 local function makeOneWay(part)
     if not part or not part:IsA("BasePart") then return end
     part.CanCollide = true
@@ -220,16 +184,20 @@ local function makeOneWay(part)
 end
 
 -- // GUI
-local guiParent = LocalPlayer:FindFirstChild("PlayerGui") or Instance.new("ScreenGui")
-guiParent.Parent = LocalPlayer
+local guiParent = LocalPlayer:FindFirstChild("PlayerGui")
+if not guiParent then
+    guiParent = Instance.new("ScreenGui")
+    guiParent.Name = "AK2Gui"
+    guiParent.Parent = LocalPlayer
+end
 local screen = Instance.new("ScreenGui")
 screen.Name = "AK2Brainrot"
 screen.Parent = guiParent
 screen.ResetOnSpawn = false
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 320, 0, 420)
-main.Position = UDim2.new(0.5, -160, 0.5, -210)
+main.Size = UDim2.new(0, 300, 0, 380)
+main.Position = UDim2.new(0.5, -150, 0.5, -190)
 main.BackgroundColor3 = Color3.fromRGB(10, 10, 20)
 main.BackgroundTransparency = 0.1
 main.BorderSizePixel = 1
@@ -238,17 +206,17 @@ main.Active = true
 main.Draggable = true
 main.Parent = screen
 local mc = Instance.new("UICorner")
-mc.CornerRadius = UDim.new(0, 12)
+mc.CornerRadius = UDim.new(0, 10)
 mc.Parent = main
 
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 40)
+header.Size = UDim2.new(1, 0, 0, 36)
 header.BackgroundColor3 = Color3.fromRGB(20, 25, 50)
 header.BackgroundTransparency = 0.4
 header.BorderSizePixel = 0
 header.Parent = main
 local hc = Instance.new("UICorner")
-hc.CornerRadius = UDim.new(0, 12)
+hc.CornerRadius = UDim.new(0, 10)
 hc.Parent = header
 
 local brand = Instance.new("TextLabel")
@@ -257,19 +225,19 @@ brand.Position = UDim2.new(0, 12, 0, 0)
 brand.BackgroundTransparency = 1
 brand.Text = "AK2 | Brainrot"
 brand.TextColor3 = Color3.fromRGB(100, 200, 255)
-brand.TextSize = 18
+brand.TextSize = 16
 brand.Font = Enum.Font.GothamBold
 brand.TextXAlignment = Enum.TextXAlignment.Left
 brand.Parent = header
 
 local close = Instance.new("TextButton")
-close.Size = UDim2.new(0, 30, 0, 30)
-close.Position = UDim2.new(1, -36, 0, 5)
+close.Size = UDim2.new(0, 28, 0, 28)
+close.Position = UDim2.new(1, -34, 0, 4)
 close.BackgroundColor3 = Color3.fromRGB(60, 40, 45)
 close.BackgroundTransparency = 0.4
 close.Text = "✕"
 close.TextColor3 = Color3.fromRGB(200, 80, 80)
-close.TextSize = 16
+close.TextSize = 14
 close.Font = Enum.Font.GothamBold
 close.Parent = header
 local cc = Instance.new("UICorner")
@@ -281,8 +249,8 @@ close.MouseButton1Click:Connect(function()
 end)
 
 local content = Instance.new("ScrollingFrame")
-content.Size = UDim2.new(1, -10, 1, -50)
-content.Position = UDim2.new(0, 5, 0, 42)
+content.Size = UDim2.new(1, -10, 1, -46)
+content.Position = UDim2.new(0, 5, 0, 38)
 content.BackgroundTransparency = 1
 content.ScrollBarThickness = 2
 content.ScrollBarImageColor3 = Color3.fromRGB(30, 30, 60)
@@ -336,26 +304,25 @@ local function makeToggle(text, getter, setter)
     return b
 end
 
--- build GUI options
 makeToggle("Auto Steal", function() return state.autoSteal end, function(v) state.autoSteal = v end)
-makeToggle("Grapple TP", function() return state.grappleTP end, function(v) 
+makeToggle("Grapple TP (click)", function() return state.grappleTP end, function(v) 
     state.grappleTP = v
     if v then
-        -- bind to click
+        -- bind to click later
     end
 end)
-makeToggle("One-Way Platforms", function() return state.oneWay end, function(v)
+makeToggle("One-Way", function() return state.oneWay end, function(v)
     state.oneWay = v
-    -- apply to all platforms
-    for _, part in pairs(Workspace:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name:lower():find("platform") then
-            makeOneWay(part)
+    if v then
+        for _, part in pairs(Workspace:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name:lower():find("platform") then
+                makeOneWay(part)
+            end
         end
     end
 end)
 makeToggle("ESP", function() return state.esp end, function(v)
     state.esp = v
-    -- simple box ESP
     if v then
         local conn = RunService.RenderStepped:Connect(function()
             for _, plr in pairs(Players:GetPlayers()) do
@@ -364,7 +331,7 @@ makeToggle("ESP", function() return state.esp end, function(v)
                 if not c then continue end
                 local root = c:FindFirstChild("HumanoidRootPart")
                 if not root then continue end
-                local pos, on = workspace.CurrentCamera:WorldToScreenPoint(root.Position)
+                local pos, on = Workspace.CurrentCamera:WorldToScreenPoint(root.Position)
                 if not on then continue end
                 local box = state.espBoxes[plr]
                 if not box then
@@ -408,5 +375,5 @@ screen.AncestryChanged:Connect(function()
     end
 end)
 
-print("★ AK2 Brainrot loaded ★ @ak2.v")
+print("★ AK2 Brainrot (Xeno) loaded ★ @ak2.v")
 print("F1 = toggle GUI")
